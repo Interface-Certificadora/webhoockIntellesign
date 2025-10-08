@@ -1,21 +1,187 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from './prisma/prisma.service';
 import { CreateWebhookDto } from './dto/create-webhook.dto';
+import { Logs } from './squelize/models/log.model';
+import { InjectModel } from '@nestjs/sequelize';
 
 @Injectable()
 export class AppService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @InjectModel(Logs)
+    private logsRepository: typeof Logs,
+  ) {}
 
-  create(data: CreateWebhookDto) {
+  async create(data: CreateWebhookDto) {
     try {
-      console.log(data);
-    } catch (error) {}
+      const uuid = data.uuid;
+      const StatusWebHook = data.resource.status;
+
+      const envelope = await this.prisma.intelesign.findFirst({
+        where: { UUID: uuid },
+      });
+      if (StatusWebHook === 'completed') {
+        const status = await this.Status(uuid, StatusWebHook, envelope.id);
+      }
+
+      let statusViw: string;
+      switch (StatusWebHook) {
+        case 'draft':
+          statusViw = 'Rascunho';
+          break;
+        case 'in-transit':
+          statusViw = 'Enviado';
+          break;
+        case 'expired':
+          statusViw = 'Expirado';
+          break;
+        case 'halted':
+          statusViw = 'Falhou';
+          break;
+        case 'completed':
+          statusViw = 'Finalizado';
+          break;
+        case 'cancelled':
+          statusViw = 'Cancelado';
+          break;
+      }
+
+      if (!envelope.id) {
+        await this.logsRepository.create({
+          log: `Envelop ${uuid} não encontrado, dados do webhook: ${JSON.stringify(
+            data,
+            null,
+            2,
+          )}`,
+        });
+      }
+
+      await this.prisma.intelesign.update({
+        where: {
+          id: envelope.id,
+        },
+        data: {
+          status: StatusWebHook,
+          status_view: statusViw,
+        },
+      });
+
+      return 'ok';
+    } catch (error) {
+      console.error('Erro ao criar envelope:', error);
+      await this.logsRepository.create({
+        log: `Erro ao criar envelope: ${JSON.stringify(error, null, 2)}`,
+      });
+      throw new Error(
+        `Erro ao criar envelope: ${error.message || 'Erro ao criar envelope'}`,
+      );
+    }
   }
 
-  async status(uuid: string) {
+  async Status(uuid: string, StatusWebHook: string, envelopeId: number) {
     try {
-      console.log(uuid);
-    } catch (error) {}
+      const token = await this.refreshToken();
+      const status = await this.GetStatus(uuid, token);
+
+      // Atualiza status dos signatários
+      for (const recipient of status.recipients) {
+        const recipientData = this.extractRecipientData(recipient);
+
+        // Busca o signatário pelo UUID primeiro (mais eficiente)
+        let signatario = await this.prisma.intelesignSignatario.findFirst({
+          where: { UUID: recipientData.uuid, envelope_id: envelopeId },
+        });
+        // Se não encontrou pelo UUID, tenta buscar por CPF e email
+        if (!signatario) {
+          const testsignatario =
+            await this.prisma.intelesignSignatario.findFirst({
+              where: {
+                cpf: recipientData.cpf,
+                email: recipientData.email,
+                envelope_id: envelopeId,
+              },
+            });
+
+          if (testsignatario) {
+            await this.prisma.intelesignSignatario.update({
+              where: { id: testsignatario.id },
+              data: {
+                state: recipientData.state,
+                filled_at: recipientData.assinado,
+                ...(recipientData.uuid && { UUID: recipientData.uuid }),
+              },
+            });
+
+            signatario = testsignatario;
+          }
+        }
+
+        // Se encontrou o signatário, prepara a atualização
+        if (signatario) {
+          await this.prisma.intelesignSignatario.update({
+            where: { id: signatario.id },
+            data: {
+              state: recipientData.state,
+              filled_at: recipientData.assinado,
+              ...(recipientData.uuid && { UUID: recipientData.uuid }),
+            },
+          });
+        }
+      }
+
+      const StatusName =
+        status.state === 'done'
+          ? 'Concluído'
+          : status.state === 'completed'
+            ? 'Concluído'
+            : 'Em andamento';
+
+      await this.prisma.intelesign.update({
+        where: { id: envelopeId },
+        data: {
+          status: status.state,
+          status_view: StatusName,
+        },
+      });
+
+      return 'ok';
+    } catch (error) {
+      console.error('Erro ao buscar status:', error);
+      await this.logsRepository.create({
+        log: `Erro ao buscar status: ${JSON.stringify(error, null, 2)}`,
+      });
+      throw new Error(
+        `Erro ao buscar status: ${error.message || 'Erro ao buscar status'}`,
+      );
+    }
+  }
+
+  /**
+   * Extrai dados do destinatário da resposta da API
+   */
+  private extractRecipientData(recipient: any) {
+    const data = {
+      uuid: recipient.id || null,
+      state: recipient.state || null,
+      email: null as string | null,
+      assinado: null as string | null,
+      cpf: null as string | null,
+    };
+
+    for (const addressee of recipient.addressees || []) {
+      if (addressee.via === 'email') {
+        data.email = addressee.value;
+        data.assinado = addressee.ran_action_at;
+      }
+
+      for (const identifier of addressee.identifiers || []) {
+        if (identifier.code === 'CPF') {
+          data.cpf = identifier.value.replace(/\D/g, '');
+        }
+      }
+    }
+
+    return data;
   }
 
   async GetStatus(uuid: string, token: string) {
