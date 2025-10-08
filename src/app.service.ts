@@ -15,13 +15,16 @@ export class AppService {
   async create(data: CreateWebhookDto) {
     try {
       const uuid = data.uuid;
+      console.log('🚀 ~ AppService ~ create ~ uuid:', uuid);
       const StatusWebHook = data.resource.status;
+      console.log('🚀 ~ AppService ~ create ~ StatusWebHook:', StatusWebHook);
 
       const envelope = await this.prisma.intelesign.findFirst({
         where: { UUID: uuid },
       });
+      console.log('🚀 ~ AppService ~ create ~ envelope.id:', envelope.id);
       if (StatusWebHook === 'completed') {
-        const status = await this.Status(uuid, StatusWebHook, envelope.id);
+        await this.Status(uuid, StatusWebHook, envelope.id);
       }
 
       let statusViw: string;
@@ -46,14 +49,16 @@ export class AppService {
           break;
       }
 
+      console.log('🚀 ~ AppService ~ create ~ statusViw:', statusViw);
       if (!envelope.id) {
-        await this.logsRepository.create({
+        const log=await this.logsRepository.create({
           log: `Envelop ${uuid} não encontrado, dados do webhook: ${JSON.stringify(
             data,
             null,
             2,
           )}`,
         });
+        console.log("🚀 ~ AppService ~ create ~ log:", log)
       }
 
       await this.prisma.intelesign.update({
@@ -86,6 +91,7 @@ export class AppService {
       // Atualiza status dos signatários
       for (const recipient of status.recipients) {
         const recipientData = this.extractRecipientData(recipient);
+        console.log("🚀 ~ AppService ~ Status ~ recipientData:", recipientData)
 
         // Busca o signatário pelo UUID primeiro (mais eficiente)
         let signatario = await this.prisma.intelesignSignatario.findFirst({
