@@ -24,14 +24,20 @@ export class AppService {
       });
       console.log('🚀 ~ AppService ~ create ~ envelope.id:', envelope.id);
       if (envelope.id) {
-        await fetch(
+        const envio =await fetch(
           `'https://apiv2.sisnato.com.br/intelesign/status/${envelope.id}`,
         );
+        const log = await this.logsRepository.create({
+          log: `Resposta de api id: ${envelope.id} uuid: ${uuid} resposta: ${JSON.stringify(
+            envio,
+          )}`,
+        });
+        console.log('🚀 ~ AppService ~ create ~ log:', log);
       }
 
       if (!envelope.id) {
         const log = await this.logsRepository.create({
-          log: `Envelop ${uuid} não encontrado, dados do webhook: ${JSON.stringify(
+          log: `Envelope uuid: ${uuid} não encontrado, dados do webhook: ${JSON.stringify(
             data,
           )}`,
         });
